@@ -19,6 +19,7 @@ jobs:
         node-version: '18'  # Specify your Node.js version
 
     - name: Install dependencies
+      working-directory: library/react-server/
       run: npm install
 
     - name: Run build
