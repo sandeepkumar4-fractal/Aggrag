@@ -86,7 +86,11 @@ import "lazysizes/plugins/attrchange/ls.attrchange";
 import { shallow } from "zustand/shallow";
 import useStore, { StoreHandles } from "./store";
 import StorageCache from "./backend/cache";
-import { APP_IS_RUNNING_LOCALLY, browserTabIsActive } from "./backend/utils";
+import {
+  FLASK_BASE_URL,
+  APP_IS_RUNNING_LOCALLY,
+  browserTabIsActive,
+} from "./backend/utils";
 import { Dict, JSONCompatible, LLMSpec } from "./backend/typing";
 import {
   exportCache,
@@ -310,7 +314,6 @@ const App = () => {
   const [autosavingInterval, setAutosavingInterval] = useState<
     NodeJS.Timeout | undefined
   >(undefined);
-
   // For 'share' button
   const clipboard = useClipboard({ timeout: 1500 });
   const [waitingForShare, setWaitingForShare] = useState(false);
@@ -320,6 +323,8 @@ const App = () => {
   const saveRef = useRef<any>(null);
   // For modal popup of example flows
   const examplesModal = useRef<ExampleFlowsModalRef>(null);
+  const queryString = window.location.search;
+  const urlParams = new URLSearchParams(queryString);
 
   // For an info pop-up that welcomes new users
   // const [welcomeModalOpened, { open: openWelcomeModal, close: closeWelcomeModal }] = useDisclosure(false);
@@ -396,6 +401,7 @@ const App = () => {
         });
       }
     }
+    setOpenAddNode(false);
   };
 
   const addTextFieldsNode = () => addNode("textFieldsNode", "textfields");
@@ -535,16 +541,18 @@ const App = () => {
 
   const loadFlow = async (flow?: Dict, rf_inst?: ReactFlowInstance | null) => {
     if (flow === undefined) return;
-
     if (rf_inst) {
-      if (flow.viewport)
-        rf_inst.setViewport({
-          x: flow.viewport.x || 0,
-          y: flow.viewport.y || 0,
-          // zoom: flow.viewport.zoom || 1,
-          zoom: (flow.viewport.x > 400 ? 0.2 : flow.viewport.zoom) || 1,
-        });
-      else rf_inst.setViewport({ x: 0, y: 0, zoom: 1 });
+      if (flow.viewport) {
+        if (rf_inst && flow.nodes.length > 10) {
+          rf_inst.setViewport({ x: 0, y: 0, zoom: 0.3 });
+        } else
+          rf_inst.setViewport({
+            x: flow.viewport.x || 0,
+            y: flow.viewport.y || 0,
+            // zoom: flow.viewport.zoom || 1,
+            zoom: flow.viewport.zoom || 1,
+          });
+      } else rf_inst.setViewport({ x: 0, y: 0, zoom: 1 });
     }
     resetLLMColors();
 
@@ -589,28 +597,34 @@ const App = () => {
   };
 
   // Export / Import (from JSON)
-  const exportFlow = useCallback(() => {
-    if (!rfInstance) return;
-
-    // We first get the data of the flow
-    const flow = rfInstance.toObject();
-
-    // Then we grab all the relevant cache files from the backend
-    const all_node_ids = nodes.map((n) => n.id);
-    exportCache(all_node_ids)
-      .then(function (cacheData) {
-        // Now we append the cache file data to the flow
-        const flow_and_cache = {
-          flow,
-          cache: cacheData,
-        };
-
-        // Save!
-        // @ts-expect-error The exported RF instance is JSON compatible but TypeScript won't read it as such.
-        downloadJSON(flow_and_cache, `flow-${Date.now()}.cforge`);
+  const exportFlow = useCallback(async () => {
+    const data: any = {};
+    data.folder_path = `configurations/${urlParams.get("p_folder")}/${urlParams.get("i_folder")}`;
+    fetch(
+      `${FLASK_BASE_URL}app/exportFiles?` +
+        new URLSearchParams(data).toString(),
+      {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      },
+    )
+      .then((res) => {
+        return res.blob();
+      })
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${urlParams.get("i_folder")}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
       })
       .catch(handleError);
-  }, [rfInstance, nodes, handleError]);
+  }, [handleError]);
 
   const handleSaveAndCommit = () => {
     handleSaveFlow(true);
@@ -623,7 +637,8 @@ const App = () => {
     setLoading(true);
     setOpenMenu(false);
     const iterationCreation = forIterationCreation ?? false;
-    if (menuData.length === 0) {
+    if (menuData && menuData.length === 0) {
+      setLoading(false);
       return;
     }
     localStorage.setItem(
@@ -1305,6 +1320,18 @@ const App = () => {
           fileName: "",
           committed: false,
         });
+
+        localStorage.setItem(
+          "iteration-created",
+          JSON.stringify({
+            usecase: temp_p_folder,
+            iteration: temp_iter_folder,
+            fileName: "",
+            committed: false,
+            iterationCreated: true,
+          }),
+        );
+
         const queryString = `?p_folder=${encodeURIComponent(temp_p_folder)}&i_folder=${temp_iter_folder}&file_name=${encodeURIComponent("")}`;
         setIsCurrentFileLocked(false);
         // Update the URL
@@ -1459,7 +1486,7 @@ const App = () => {
       setOpenMenu(false);
       resetFlowToBlankCanvas();
       setWarning({ warning: "", open: true });
-      setIsCurrentFileLocked(true);
+      setIsCurrentFileLocked(false);
       setIsChangesNotSaved(false);
     }
   };
@@ -1918,10 +1945,6 @@ const App = () => {
     }
   };
 
-  useEffect(() => {
-    fetchFoldersAndContents();
-  }, [isUseCaseCreated]);
-
   // this code is for routing to respective methods when user confirms in the save changes modal
   useEffect(() => {
     if (confirmed) {
@@ -1960,47 +1983,17 @@ const App = () => {
   }, [confirmed]);
 
   useEffect(() => {
-    // Cleanup the autosaving interval upon component unmount:
-    return () => {
-      clearInterval(autosavingInterval); // Clear the interval when the component is unmounted
-    };
-  }, []);
-
-  useEffect(() => {
-    window.addEventListener("error", (e) => {
-      if (e.message.startsWith("ResizeObserver loop")) {
-        const resizeObserverErrDiv = document.getElementById(
-          "webpack-dev-server-client-overlay-div",
-        );
-        const resizeObserverErr = document.getElementById(
-          "webpack-dev-server-client-overlay",
-        );
-        if (resizeObserverErr) {
-          resizeObserverErr.setAttribute("style", "display: none");
-        }
-        if (resizeObserverErrDiv) {
-          resizeObserverErrDiv.setAttribute("style", "display: none");
-        }
-      }
-    });
-  }, []);
-
-  useEffect(() => {
     const localStorageContent = localStorage.getItem("current_usecase");
-    const parsedData2 = localStorageContent && JSON.parse(localStorageContent);
     const userId = localStorage.getItem("aggrag-userId");
+
     if (userId === null) {
       const currentTimeStamp = new Date().getTime();
       localStorage.setItem("aggrag-userId", currentTimeStamp.toString());
     }
+
     if (localStorageContent != null) {
       const parsedData = JSON.parse(localStorageContent);
-      setActiveUseCase({
-        usecase: parsedData.parent_folder,
-        iteration: parsedData.iter_folder,
-        fileName: parsedData.file_name,
-        committed: parsedData.committed,
-      });
+
       if (
         parsedData &&
         parsedData.file_name &&
@@ -2019,6 +2012,13 @@ const App = () => {
       } else {
         resetFlowToBlankCanvas();
       }
+
+      setActiveUseCase({
+        usecase: parsedData.parent_folder,
+        iteration: parsedData.iter_folder,
+        fileName: parsedData.file_name,
+        committed: parsedData.committed,
+      });
 
       if (parsedData.committed) {
         setIsCurrentFileLocked(true);
@@ -2069,6 +2069,36 @@ const App = () => {
       });
     }
   }, []);
+
+  useEffect(() => {
+    // Cleanup the autosaving interval upon component unmount:
+    return () => {
+      clearInterval(autosavingInterval); // Clear the interval when the component is unmounted
+    };
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("error", (e) => {
+      if (e.message.startsWith("ResizeObserver loop")) {
+        const resizeObserverErrDiv = document.getElementById(
+          "webpack-dev-server-client-overlay-div",
+        );
+        const resizeObserverErr = document.getElementById(
+          "webpack-dev-server-client-overlay",
+        );
+        if (resizeObserverErr) {
+          resizeObserverErr.setAttribute("style", "display: none");
+        }
+        if (resizeObserverErrDiv) {
+          resizeObserverErrDiv.setAttribute("style", "display: none");
+        }
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    fetchFoldersAndContents();
+  }, [isUseCaseCreated]);
 
   if (!IS_ACCEPTED_BROWSER) {
     return (
@@ -2366,6 +2396,11 @@ const App = () => {
           id="cf-root-container"
           style={{ display: "flex", height: "100vh" }}
           onPointerDown={hideContextMenu}
+          onClick={() => {
+            setOpenAddNode(false);
+            setOpenMenu(false);
+            setSaveAndCommitBtnOpen(false);
+          }}
         >
           <div
             style={{ height: "100%", backgroundColor: "#eee", flexGrow: "1" }}
@@ -2439,8 +2474,9 @@ const App = () => {
                 position="top-start"
                 closeOnClickOutside={true}
                 closeOnEscape
-                trigger="hover"
+                trigger="click"
                 width={270}
+                opened={openMenu}
               >
                 <Menu.Target>
                   <Button
@@ -2450,6 +2486,7 @@ const App = () => {
                     onClick={() => {
                       setSaveAndCommitBtnOpen(false);
                       setOpenMenu(!openMenu);
+                      setOpenAddNode(false);
                     }}
                     variant="gradient"
                   >
@@ -2751,7 +2788,8 @@ const App = () => {
                 closeOnEscape
                 styles={{ item: { maxHeight: "28px" } }}
                 disabled={isCurrenFileLocked}
-                trigger="hover"
+                trigger="click"
+                opened={openAddNode}
               >
                 <Menu.Target>
                   <Button
@@ -2763,7 +2801,11 @@ const App = () => {
                       (activeUseCase && activeUseCase.usecase === "") ||
                       isCurrenFileLocked
                     }
-                    onClick={() => setOpenAddNode(!openAddNode)} // to close use cases menu
+                    onClick={() => {
+                      setOpenAddNode(!openAddNode);
+                      setOpenMenu(false);
+                      setSaveAndCommitBtnOpen(false);
+                    }} // to close use cases menu
                   >
                     Add Node +
                   </Button>
@@ -2953,6 +2995,7 @@ const App = () => {
                 size="sm"
                 variant="outline"
                 compact
+                bg="#eee"
                 mr="xs"
                 onClick={() => {
                   handleSaveDropdown();
@@ -2964,10 +3007,15 @@ const App = () => {
                       e.stopPropagation();
                       setSaveAndCommitBtnOpen(!saveAndCommitBtnOpen);
                       setOpenMenu(false);
+                      setOpenAddNode(false);
                     }}
                   >
                     <div ref={saveRef}>
-                      <Menu position="top-start" trigger="hover">
+                      <Menu
+                        position="top-start"
+                        opened={saveAndCommitBtnOpen}
+                        transitionProps={{ transition: "pop" }}
+                      >
                         <div>
                           <Menu.Target>
                             <div

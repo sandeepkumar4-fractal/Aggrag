@@ -19,6 +19,7 @@ from library.aggrag.core.schema import (
     MetaLangRagSetting,
     TableBaseRagSetting,
 )
+from library.aggrag.core.utils import zip_directory
 from library.providers.dalai import call_dalai
 from library.providers import ProviderRegistry
 import requests as py_requests
@@ -26,6 +27,7 @@ import logging
 from werkzeug.utils import secure_filename
 from werkzeug.datastructures import ImmutableMultiDict
 from library.aggrag.core.log_config import app_loger
+from openai import OpenAIError
 
 
 """ =================
@@ -1034,7 +1036,14 @@ def indexRAGFiles():
         )
 
     except ValidationError as e:
-        return jsonify({"error": e.errors()})
+        # Return a JSON response with the validation errors
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        # Handle other exceptions
+        return jsonify({'error': str(e)}), 500
+
+
+
 
     aggrag = AggRAG(
         ragstore_bool=RagStoreBool(**{rag_name: True}),
@@ -1425,6 +1434,7 @@ def load_cforge():
             ],
             key=lambda x: int(re.match(r"iteration[ _](\d+)", x).group(1)),
         )
+
         for iteration in iterations:
             iteration_path = os.path.join(folder_path, iteration)
             iteration_contents = os.listdir(iteration_path)
@@ -1615,8 +1625,12 @@ def RAGStoreChat():
         )
 
     except ValidationError as e:
-        return jsonify({"error": e.errors()})
-
+        # Return a JSON response with the validation errors
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        # Handle other exceptions
+        return jsonify({'error': str(e)}), 500
+    
     aggrag = AggRAG(
         ragstore_bool=RagStoreBool(**{rag_name: True}),
         usecase_name=use_case_name,
@@ -1657,11 +1671,19 @@ def RAGStoreChat():
         )
         return jsonify({"response": chat_answer})
 
+    except OpenAIError as e:
+        # Handle OpenAI API errors
+        logger.error(f"OpenAI API error: {str(e)}")
+        return jsonify({'error': 'An error occurred while communicating with the OpenAI API.', 'details': str(e)}), 500
     except FileNotFoundError as e:
-        return jsonify({"error": str(e)})
+        return jsonify({'error': str(e)})
 
-
-@app.route("/app/deleteiteration", methods=["DELETE"])
+    except Exception as e:
+        # Handle other exceptions
+        logging.error(f"Unexpected error: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred.', 'details': str(e)}), 500
+        
+@app.route('/app/deleteiteration', methods=['DELETE'])
 def delete_iteration():
     data = request.get_json()
     usecase_folder_name = data.get("folderName")
@@ -1707,6 +1729,19 @@ def get_health_check():
     return jsonify({"message": "ok"}), 200
 
 
+@app.route('/app/exportFiles', methods=['GET'])
+def exportFiles():
+    folder_to_zip = request.args.get('folder_path')
+    if not folder_to_zip:
+        return jsonify({'error': f"folder_path is required"})
+
+    memory_file = zip_directory(folder_to_zip)
+    if not memory_file:
+        return jsonify({'error': f"Failed to zip provided directory"})
+
+    return send_file(memory_file, mimetype='application/zip', as_attachment=True, download_name='files.zip')
+
+
 def run_server(host="", port=8000, cmd_args=None):
     global HOSTNAME, PORT
     HOSTNAME = host
@@ -1724,7 +1759,6 @@ def get_event_loop():
         asyncio.set_event_loop(loop)
 
     return loop
-
 
 if __name__ == "__main__":
     print("Run app.py instead.")
