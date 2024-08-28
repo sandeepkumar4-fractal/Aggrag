@@ -21,7 +21,7 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '120'  # Specify your Node.js version
+        node-version: '20'  # Specify your Node.js version
 
     - name: Install dependencies
       working-directory: library/react-server/
